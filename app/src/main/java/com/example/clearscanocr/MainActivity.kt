@@ -2,6 +2,7 @@ package com.example.clearscanocr
 
 import android.Manifest
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -23,10 +24,21 @@ import com.example.clearscanocr.presentation.HomeScreen
 import com.example.clearscanocr.presentation.OcrUiState
 import com.example.clearscanocr.presentation.OcrViewModel
 import com.example.clearscanocr.ui.theme.ClearScanOCRTheme
+import org.opencv.android.OpenCVLoader
+
+private const val TAG = "MainActivity"
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Initialise OpenCV native libs (static init — no async callback)
+        if (OpenCVLoader.initLocal()) {
+            Log.d(TAG, "OpenCV initialised successfully")
+        } else {
+            Log.e(TAG, "OpenCV initialisation FAILED")
+        }
+
         enableEdgeToEdge()
         setContent {
             ClearScanOCRTheme {

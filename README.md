@@ -1,27 +1,23 @@
 # ClearScanOCR
 
-ClearScanOCR is a production-ready Android application built with Jetpack Compose and CameraX, integrating Google ML Kit Text Recognition v2 for high-accuracy, on-device raw text extraction from documents.
+ClearScanOCR is a production-ready Android application that transforms your smartphone into a high-precision document scanner. It combines real-time **OpenCV** edge detection, **Auto-Capture** intelligence, and **ML Kit** structured data extraction.
 
-## Features
+## ✨ Advanced Features
 
-- **Jetpack Compose UI**: A fully reactive, modern user interface built without XML.
-- **CameraX Integration**: Live camera preview with lifecycle-aware resource management.
-- **Manual Scan Mode**: High-accuracy single-frame capture triggered by the user to avoid continuous processing overhead and improve precision.
-- **Smart Alignment Guide**: An on-screen document alignment guide (4:3 aspect ratio) to help users position their documents perfectly.
-- **Precision Cropping**: OCR runs *only* on the region inside the alignment guide, ensuring background noise and text outside the frame are ignored. Includes rotation and `PreviewView` FILL_CENTER compensation.
-- **Image Preprocessing**: Raw camera frames are converted to grayscale and have their contrast enhanced (1.3x) via `ColorMatrix` to maximize OCR accuracy prior to processing.
-- **Confidence Filtering**: Text lines with an ML Kit confidence score below 0.7 are filtered out.
-- **Text Cleanup**: Automatically trims whitespace, removes duplicate blank lines, and merges fragmented lines that lack sentence-ending punctuation.
-- **Bounding Box Overlay**: Visual feedback displaying green rectangles around detected text blocks in the scan result view.
-- **Clipboard & Share**: Easily copy the extracted text to the clipboard or share it via Android intents.
+- **Real-Time Edge Detection**: Live document tracking with vertex smoothing and stability logic.
+- **Auto-Capture**: Intelligent "Ready to Capture" engine that triggers only when the document is stable, well-lit, and perfectly aligned.
+- **Perspective Transformation**: Automatically flattens angled documents into a top-down, rectangular view.
+- **Image Enhancement**: Adaptive thresholding and grayscale processing to maximize OCR readability in any lighting.
+- **ROI Data Extraction**: Automatically identifies and extracts **Dates**, **Times**, and **Temperature** readings using regional analysis and regex.
+- **Modern Jetpack Compose UI**: A premium, responsive interface with live guidance messages and a "flash" capture effect.
 
-## Architecture
+## 🏗️ Architecture
 
-The project strictly follows the **MVVM (Model-View-ViewModel)** architecture:
+The project follows a modular **Clean Architecture** (MVVM):
 
-- **presentation/**: `OcrScreen.kt` and `OcrViewModel.kt` manage the UI state, user intent, and CameraX interactions.
-- **domain/**: `OcrUseCase.kt` acts as the bridge coordinating preprocessing and text extraction.
-- **data/**: `OcrProcessor.kt`, `ImagePreprocessor.kt`, and `TextCleaner.kt` handle the ML Kit client, Bitmap manipulation (cropping & contrast), and string formatting.
+- **Presentation Layer**: Reactive UI with guidance badges and structured result cards.
+- **Domain Layer**: Core geometry and CV logic (Perspective warp, Laplacian blur detection).
+- **Data Layer**: ML Kit integration, ROI regional analysis, and regex extraction engine.
 
 ## Setup & Requirements
 

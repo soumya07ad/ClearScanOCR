@@ -13,60 +13,82 @@ import kotlin.coroutines.resumeWithException
 /**
  * Data-layer wrapper around ML Kit [TextRecognizer].
  *
- * Holds a singleton recognizer instance to avoid repeated initialization.
- * Supports confidence filtering and bounding-box extraction.
+ * Holds a singleton recognizer instance and a [RoiOcrProcessor] for
+ * structured data extraction.
  */
 class OcrProcessor {
 
-    /** Singleton ML Kit recognizer — reused across all frames. */
     private val recognizer: TextRecognizer =
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    private val roiProcessor = RoiOcrProcessor()
 
-    /** Minimum confidence threshold for including a text line. */
     companion object {
         private const val MIN_CONFIDENCE = 0.7f
     }
 
     /**
-     * Run text recognition on a [Bitmap] with full preprocessing pipeline:
-     * rotate → crop to visible guide → grayscale/contrast → ML Kit →
-     * confidence filter → text cleaning.
+     * Run text recognition on a [Bitmap].
      *
-     * @param bitmap          Raw camera frame (NOT recycled by this call).
-     * @param rotationDegrees Rotation from the camera sensor.
+     * When [isAlreadyWarped] is **true** (perspective-corrected + enhanced bitmap),
+     * the crop-to-guide and preprocessing steps are skipped; the image is fed
+     * directly into [RoiOcrProcessor] for structured extraction.
+     *
+     * When **false**, the legacy pipeline (crop → enhance → full OCR) is used.
+     *
+     * @param bitmap          Camera frame or pre-processed bitmap.
+     * @param rotationDegrees Rotation from the camera sensor (ignored when already warped).
      * @param viewWidth       PreviewView width in pixels.
      * @param viewHeight      PreviewView height in pixels.
-     * @return [OcrResult] with cleaned text and bounding boxes.
+     * @param isAlreadyWarped Whether [bitmap] has already been warped and enhanced.
      */
     suspend fun processBitmap(
         bitmap: Bitmap,
         rotationDegrees: Int,
         viewWidth: Int,
-        viewHeight: Int
+        viewHeight: Int,
+        isAlreadyWarped: Boolean = false
     ): OcrResult {
-        // 1. Crop to the exact guide-overlay region (rotation-aware)
-        val cropped = ImagePreprocessor.cropToGuide(
-            source = bitmap,
-            rotationDegrees = rotationDegrees,
-            viewWidth = viewWidth,
-            viewHeight = viewHeight
-        )
 
-        // 2. Enhance (grayscale + contrast)
-        val enhanced = ImagePreprocessor.preprocess(cropped)
-        cropped.recycle()
-
-        return try {
-            // rotationDegrees = 0 because we already rotated in cropToGuide
-            val inputImage = InputImage.fromBitmap(enhanced, 0)
-            processImageFull(inputImage, enhanced.width, enhanced.height)
-        } finally {
-            enhanced.recycle()
+        return if (isAlreadyWarped) {
+            // ── Fast path: bitmap is ready — extract ROI + structured data ──
+            processWithRoi(bitmap)
+        } else {
+            // ── Legacy path: crop to guide → enhance → full OCR ─────────────
+            val cropped = ImagePreprocessor.cropToGuide(
+                source = bitmap,
+                rotationDegrees = rotationDegrees,
+                viewWidth = viewWidth,
+                viewHeight = viewHeight
+            )
+            val enhanced = ImagePreprocessor.preprocess(cropped)
+            cropped.recycle()
+            return try {
+                val inputImage = InputImage.fromBitmap(enhanced, 0)
+                processImageFull(inputImage, enhanced.width, enhanced.height)
+            } finally {
+                enhanced.recycle()
+            }
         }
     }
 
     /**
-     * Full OCR processing with confidence filtering and bounding boxes.
+     * Fast path: run ROI extraction on an already-prepared [bitmap].
+     */
+    private suspend fun processWithRoi(bitmap: Bitmap): OcrResult {
+        val (blocks, structured) = roiProcessor.extractStructured(bitmap, isAlreadyWarped = true)
+        val rawText = blocks.joinToString("\n") { it.text }
+        val cleanedText = TextCleaner.clean(rawText)
+        return OcrResult(
+            text = cleanedText,
+            textBlocks = blocks,
+            sourceWidth = bitmap.width,
+            sourceHeight = bitmap.height,
+            structuredData = structured
+        )
+    }
+
+    /**
+     * Legacy full OCR with confidence filtering and bounding boxes.
      */
     private suspend fun processImageFull(
         inputImage: InputImage,

@@ -28,8 +28,11 @@ class OcrUseCase(
         bitmap: Bitmap,
         rotationDegrees: Int,
         viewWidth: Int,
-        viewHeight: Int
+        viewHeight: Int,
+        isAlreadyWarped: Boolean = false
     ): OcrResult {
-        return ocrProcessor.processBitmap(bitmap, rotationDegrees, viewWidth, viewHeight)
+        return ocrProcessor.processBitmap(
+            bitmap, rotationDegrees, viewWidth, viewHeight, isAlreadyWarped
+        )
     }
 }
