@@ -420,15 +420,51 @@ fun CameraPreviewScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "Scan Result",
+                        text = result.title.ifBlank { "Scan Result" },
                         color = Color.White,
                         style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
                     )
                     Spacer(modifier = Modifier.height(16.dp))
 
                     if (result.isValid) {
-                        StructuredDataCard(result)
+                        Column(
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            // 1. Full Text Card (Always show if not blank)
+                            if (result.rawText.isNotBlank()) {
+                                androidx.compose.material3.Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = androidx.compose.material3.CardDefaults.cardColors(
+                                        containerColor = Color.White.copy(alpha = 0.1f)
+                                    ),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Column(modifier = Modifier.padding(16.dp)) {
+                                        Text(
+                                            "Full Text",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color.Gray
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text(
+                                            text = result.rawText,
+                                            color = Color.White,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    }
+                                }
+                            }
+
+                            // 2. Structured Data Card (Show only if some fields exist)
+                            if (hasStructuredData(result)) {
+                                StructuredDataCard(result)
+                            }
+                        }
                     } else {
                         // Display error message
                         Text(
@@ -441,12 +477,25 @@ fun CameraPreviewScreen(
 
                     Spacer(modifier = Modifier.height(20.dp))
 
-                    val formattedText = """
-                        Date: ${result.date}
-                        Time: ${result.time}
-                        Low Set: ${result.lowSetTemp} | Target: ${result.targetTemp} | High Set: ${result.highSetTemp} | Peak: ${result.peakTemp}
-                        Counts -> Low: ${result.lowTempCount} | OK: ${result.okTempCount} | High: ${result.highTempCount} | Total: ${result.totalTempCount}
-                    """.trimIndent()
+                    val formattedText = buildString {
+                        if (result.title.isNotBlank()) appendLine("Result: ${result.title}")
+                        if (result.rawText.isNotBlank()) {
+                            appendLine("--- FULL TEXT ---")
+                            appendLine(result.rawText)
+                            appendLine("-----------------")
+                        }
+                        if (hasStructuredData(result)) {
+                            appendLine("--- STRUCTURED DATA ---")
+                            if (result.date.isNotBlank()) appendLine("Date: ${result.date}")
+                            if (result.time.isNotBlank()) appendLine("Time: ${result.time}")
+                            if (result.lowSetTemp.isNotBlank() || result.targetTemp.isNotBlank()) {
+                                appendLine("Temps: Low Set=${result.lowSetTemp}, Target=${result.targetTemp}, High Set=${result.highSetTemp}, Peak=${result.peakTemp}")
+                            }
+                            if (result.lowTempCount.isNotBlank() || result.totalTempCount.isNotBlank()) {
+                                appendLine("Counts: Low=${result.lowTempCount}, OK=${result.okTempCount}, High=${result.highTempCount}, Total=${result.totalTempCount}")
+                            }
+                        }
+                    }
 
                     // Action buttons — using FlowRow for wrapping
                     FlowRow(
@@ -557,7 +606,7 @@ fun CameraPreviewScreen(
 @Composable
 private fun StructuredDataCard(result: com.example.clearscanocr.data.OcrResult) {
     androidx.compose.material3.Card(
-        modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp).verticalScroll(rememberScrollState()),
+        modifier = Modifier.fillMaxWidth(),
         colors = androidx.compose.material3.CardDefaults.cardColors(
             containerColor = Color.White.copy(alpha = 0.1f)
         ),
@@ -565,45 +614,58 @@ private fun StructuredDataCard(result: com.example.clearscanocr.data.OcrResult) 
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             // Header: Date & Time
-            androidx.compose.foundation.layout.Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                if (result.date.isNotBlank()) {
-                    InfoRow(Icons.Default.Event, result.date, Color(0xFF81C784))
-                }
-                if (result.time.isNotBlank()) {
-                    InfoRow(Icons.Default.AccessTime, result.time, Color(0xFF64B5F6))
-                }
-            }
-
             if (result.date.isNotBlank() || result.time.isNotBlank()) {
+                androidx.compose.foundation.layout.Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    if (result.date.isNotBlank()) {
+                        InfoRow(Icons.Default.Event, result.date, Color(0xFF81C784))
+                    }
+                    if (result.time.isNotBlank()) {
+                        InfoRow(Icons.Default.AccessTime, result.time, Color(0xFF64B5F6))
+                    }
+                }
                 Spacer(modifier = Modifier.height(12.dp))
                 androidx.compose.material3.Divider(color = Color.White.copy(alpha = 0.1f))
-                Spacer(modifier = Modifier.height(12.dp))
             }
 
-            Text("Temperatures", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            // Grid for temperatures
-            TempRow("Low Set", result.lowSetTemp, "Target", result.targetTemp)
-            Spacer(modifier = Modifier.height(8.dp))
-            TempRow("High Set", result.highSetTemp, "Peak", result.peakTemp)
+            // Temperatures Section
+            if (result.lowSetTemp.isNotBlank() || result.targetTemp.isNotBlank() || 
+                result.highSetTemp.isNotBlank() || result.peakTemp.isNotBlank()) {
+                
+                Spacer(modifier = Modifier.height(12.dp))
+                Text("Temperatures", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Spacer(modifier = Modifier.height(8.dp))
+                TempRow("Low Set", result.lowSetTemp, "Target", result.targetTemp)
+                Spacer(modifier = Modifier.height(8.dp))
+                TempRow("High Set", result.highSetTemp, "Peak", result.peakTemp)
+                
+                if (result.lowTempCount.isNotBlank() || result.totalTempCount.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    androidx.compose.material3.Divider(color = Color.White.copy(alpha = 0.1f))
+                }
+            }
 
-            Spacer(modifier = Modifier.height(12.dp))
-            androidx.compose.material3.Divider(color = Color.White.copy(alpha = 0.1f))
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Text("Counts", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            // Grid for counts
-            TempRow("Low", result.lowTempCount, "OK", result.okTempCount)
-            Spacer(modifier = Modifier.height(8.dp))
-            TempRow("High", result.highTempCount, "Total", result.totalTempCount)
+            // Counts Section
+            if (result.lowTempCount.isNotBlank() || result.okTempCount.isNotBlank() || 
+                result.highTempCount.isNotBlank() || result.totalTempCount.isNotBlank()) {
+                
+                Spacer(modifier = Modifier.height(12.dp))
+                Text("Counts", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Spacer(modifier = Modifier.height(8.dp))
+                TempRow("Low", result.lowTempCount, "OK", result.okTempCount)
+                Spacer(modifier = Modifier.height(8.dp))
+                TempRow("High", result.highTempCount, "Total", result.totalTempCount)
+            }
         }
     }
+}
+
+private fun hasStructuredData(result: com.example.clearscanocr.data.OcrResult): Boolean {
+    return result.date.isNotBlank() || result.time.isNotBlank() || 
+           result.lowSetTemp.isNotBlank() || result.targetTemp.isNotBlank() ||
+           result.lowTempCount.isNotBlank() || result.totalTempCount.isNotBlank()
 }
 
 @Composable

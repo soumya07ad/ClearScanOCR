@@ -22,27 +22,28 @@ class GeminiOcrService {
     }
 
     private val promptText = """
-        Extract structured data from this industrial control panel image.
+        Analyze this image and extract all text and structured data.
 
-        Return ONLY valid JSON:
+        Return ONLY a JSON object with these fields:
         {
-        "date": "",
-        "time": "",
-        "low_set_temp": "",
-        "target_temp": "",
-        "high_set_temp": "",
-        "low_temp_count": "",
-        "ok_temp_count": "",
-        "high_temp_count": "",
-        "total_temp_count": "",
-        "peak_temp": ""
+          "title": "A short descriptive title (e.g., 'Book Page', 'Receipt', 'Industrial Panel')",
+          "raw_text": "ALL text found in the image, preserving layout where possible",
+          "date": "Extracted date if present",
+          "time": "Extracted time if present",
+          "low_set_temp": "Numeric value for 'Low Set' if present",
+          "target_temp": "Numeric value for 'Target' if present",
+          "high_set_temp": "Numeric value for 'High Set' if present",
+          "low_temp_count": "Numeric value for 'Low Count' if present",
+          "ok_temp_count": "Numeric value for 'OK Count' if present",
+          "high_temp_count": "Numeric value for 'High Count' if present",
+          "total_temp_count": "Numeric value for 'Total Count' if present",
+          "peak_temp": "Numeric value for 'Peak' if present"
         }
 
         Rules:
-        * Each label corresponds to a nearby numeric value
-        * Do not mix rows or columns
-        * Ignore noise text
-        * Ensure numeric accuracy
+        * If a field is not found, return an empty string "".
+        * Do NOT return 'null' as a value.
+        * Ensure 'raw_text' is as complete as possible.
     """.trimIndent()
 
     suspend fun extractStructuredData(bitmap: Bitmap): OcrResult = withContext(Dispatchers.IO) {
@@ -69,17 +70,24 @@ class GeminiOcrService {
 
             val json = JSONObject(responseText)
 
+            fun optStr(key: String): String {
+                val value = json.optString(key, "")
+                return if (value == "null") "" else value
+            }
+
             OcrResult(
-                date = json.optString("date", ""),
-                time = json.optString("time", ""),
-                lowSetTemp = json.optString("low_set_temp", ""),
-                targetTemp = json.optString("target_temp", ""),
-                highSetTemp = json.optString("high_set_temp", ""),
-                lowTempCount = json.optString("low_temp_count", ""),
-                okTempCount = json.optString("ok_temp_count", ""),
-                highTempCount = json.optString("high_temp_count", ""),
-                totalTempCount = json.optString("total_temp_count", ""),
-                peakTemp = json.optString("peak_temp", ""),
+                title = optStr("title"),
+                rawText = optStr("raw_text"),
+                date = optStr("date"),
+                time = optStr("time"),
+                lowSetTemp = optStr("low_set_temp"),
+                targetTemp = optStr("target_temp"),
+                highSetTemp = optStr("high_set_temp"),
+                lowTempCount = optStr("low_temp_count"),
+                okTempCount = optStr("ok_temp_count"),
+                highTempCount = optStr("high_temp_count"),
+                totalTempCount = optStr("total_temp_count"),
+                peakTemp = optStr("peak_temp"),
                 isValid = true,
                 errorMessage = null
             )

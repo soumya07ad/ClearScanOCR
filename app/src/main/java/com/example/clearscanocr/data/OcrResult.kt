@@ -6,6 +6,8 @@ import android.graphics.Rect
  * Cleanly parsed data from Gemini OCR.
  */
 data class OcrResult(
+    val title: String = "",
+    val rawText: String = "",
     val date: String = "",
     val time: String = "",
     val lowSetTemp: String = "",
