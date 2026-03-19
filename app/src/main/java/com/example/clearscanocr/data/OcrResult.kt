@@ -3,38 +3,19 @@ package com.example.clearscanocr.data
 import android.graphics.Rect
 
 /**
- * Vertical region a text block belongs to.
- */
-enum class RegionLabel { TOP, MIDDLE, BOTTOM }
-
-/**
- * Structured values extracted from a scanned document.
- */
-data class StructuredData(
-    val date: String?         = null,
-    val time: String?         = null,
-    val temperatures: List<String> = emptyList(),
-    val peakTemp: String?     = null,
-    val counts: List<String>  = emptyList()
-)
-
-/**
- * Result of an OCR scan.
+ * Cleanly parsed data from Gemini OCR.
  */
 data class OcrResult(
-    val text: String,
-    val textBlocks: List<DetectedTextBlock>,
-    val sourceWidth: Int,
-    val sourceHeight: Int,
-    val structuredData: StructuredData? = null
-)
-
-/**
- * A single detected text block from ML Kit that passed
- * confidence filtering (>= 0.7).
- */
-data class DetectedTextBlock(
-    val text: String,
-    val boundingBox: Rect,
-    val region: RegionLabel = RegionLabel.MIDDLE
+    val date: String = "",
+    val time: String = "",
+    val lowSetTemp: String = "",
+    val targetTemp: String = "",
+    val highSetTemp: String = "",
+    val lowTempCount: String = "",
+    val okTempCount: String = "",
+    val highTempCount: String = "",
+    val totalTempCount: String = "",
+    val peakTemp: String = "",
+    val isValid: Boolean = true,
+    val errorMessage: String? = null
 )

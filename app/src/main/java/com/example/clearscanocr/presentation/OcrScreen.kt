@@ -147,44 +147,6 @@ private fun shareText(context: Context, text: String) {
     context.startActivity(Intent.createChooser(intent, "Share OCR Text"))
 }
 
-// ── Bounding Box Overlay ────────────────────────────────────────────
-
-/**
- * Draws bounding boxes from [ocrResult] on a Compose Canvas
- * that fills the available space, scaling coordinates from
- * source-image space to canvas space.
- */
-@Composable
-private fun BoundingBoxOverlay(
-    ocrResult: OcrResult,
-    modifier: Modifier = Modifier
-) {
-    if (ocrResult.textBlocks.isEmpty() || ocrResult.sourceWidth == 0) return
-
-    Canvas(modifier = modifier) {
-        val scaleX = size.width / ocrResult.sourceWidth
-        val scaleY = size.height / ocrResult.sourceHeight
-
-        val stroke = Stroke(width = 3f)
-        val boxColor = Color(0xFF4CAF50) // Green
-
-        for (block in ocrResult.textBlocks) {
-            val rect = block.boundingBox
-            val left = rect.left * scaleX
-            val top = rect.top * scaleY
-            val right = rect.right * scaleX
-            val bottom = rect.bottom * scaleY
-
-            drawRect(
-                color = boxColor,
-                topLeft = Offset(left, top),
-                size = androidx.compose.ui.geometry.Size(right - left, bottom - top),
-                style = stroke
-            )
-        }
-    }
-}
-
 // ── Camera Preview Screen ───────────────────────────────────────────
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -290,9 +252,11 @@ fun CameraPreviewScreen(
                                     .imageProxyToBitmap(rawBitmap, rotation)
                                 // Run edge detection pipeline
                                 val edgeResult = OpenCvEdgeDetector.processFrame(rotated)
+                                val rw = rotated.width
+                                val rh = rotated.height
                                 rotated.recycle()
                                 // Post result to ViewModel
-                                viewModel.onEdgeFrame(edgeResult)
+                                viewModel.onEdgeFrame(edgeResult, rw, rh)
                             }
                         } catch (e: Exception) {
                             Log.e(TAG, "Analyzer error", e)
@@ -319,14 +283,14 @@ fun CameraPreviewScreen(
             cameraProvider.unbindAll()
             analysisExecutor.shutdown()
             // Clear edge overlay and reset detector state
-            viewModel.onEdgeFrame(EdgeDetectionResult(null, "", 0f))
+            viewModel.onEdgeFrame(EdgeDetectionResult(null, "", 0f), 720, 1280)
             OpenCvEdgeDetector.reset()
             Log.d(TAG, "Camera unbound & executor shut down")
         }
     }
 
     // ── UI ────────────────────────────────────────────────────────────
-    val edgeOverlay by viewModel.edgeOverlayBitmap.collectAsState()
+    val detectedCorners by viewModel.detectedCorners.collectAsState()
     val guidanceMsg by viewModel.guidanceMessage.collectAsState()
     val autoCaptureEnabled by viewModel.autoCaptureEnabled.collectAsState()
     val autoCaptureStatus by viewModel.autoCaptureStatus.collectAsState()
@@ -348,16 +312,31 @@ fun CameraPreviewScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Layer 2: Real-time edge detection overlay
-        edgeOverlay?.let { bmp ->
-            if (!bmp.isRecycled) {
-                Image(
-                    bitmap = bmp.asImageBitmap(),
-                    contentDescription = "Edge detection overlay",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                    alpha = 0.6f
-                )
+        // Layer 2: Real-time edge detection overlay (Canvas based)
+        detectedCorners?.let { corners ->
+            val dim by viewModel.analyzerDim.collectAsState()
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val pts = corners.map { p ->
+                    Offset(
+                        x = (p.x.toFloat() / dim.width.toFloat()) * size.width,
+                        y = (p.y.toFloat() / dim.height.toFloat()) * size.height
+                    )
+                }
+                
+                if (pts.size == 4) {
+                    val path = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(pts[0].x, pts[0].y)
+                        lineTo(pts[1].x, pts[1].y)
+                        lineTo(pts[2].x, pts[2].y)
+                        lineTo(pts[3].x, pts[3].y)
+                        close()
+                    }
+                    drawPath(
+                        path = path,
+                        color = Color.Green,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4.dp.toPx())
+                    )
+                }
             }
         }
 
@@ -446,57 +425,28 @@ fun CameraPreviewScreen(
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold
                     )
-                    // Structured Data (if available)
-                    result.structuredData?.let { data ->
-                        StructuredDataCard(data)
-                        Spacer(modifier = Modifier.height(16.dp))
-                    }
+                    Spacer(modifier = Modifier.height(16.dp))
 
-                    // Bounding-box preview (scaled to a small card)
-                    if (result.textBlocks.isNotEmpty()) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(160.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(Color.DarkGray)
-                        ) {
-                            BoundingBoxOverlay(
-                                ocrResult = result,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                            Text(
-                                text = "${result.textBlocks.size} text block(s) detected",
-                                color = Color.White.copy(alpha = 0.8f),
-                                style = MaterialTheme.typography.labelSmall,
-                                modifier = Modifier
-                                    .align(Alignment.BottomEnd)
-                                    .padding(8.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(12.dp))
-                    }
-
-                    // Scrollable result text
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 220.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color.White.copy(alpha = 0.1f))
-                            .padding(14.dp)
-                    ) {
+                    if (result.isValid) {
+                        StructuredDataCard(result)
+                    } else {
+                        // Display error message
                         Text(
-                            text = result.text,
-                            color = Color.White,
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .verticalScroll(rememberScrollState())
+                            text = result.errorMessage ?: "Unknown error occurred.",
+                            color = Color(0xFFFF5252),
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.padding(16.dp)
                         )
                     }
 
                     Spacer(modifier = Modifier.height(20.dp))
+
+                    val formattedText = """
+                        Date: ${result.date}
+                        Time: ${result.time}
+                        Low Set: ${result.lowSetTemp} | Target: ${result.targetTemp} | High Set: ${result.highSetTemp} | Peak: ${result.peakTemp}
+                        Counts -> Low: ${result.lowTempCount} | OK: ${result.okTempCount} | High: ${result.highTempCount} | Total: ${result.totalTempCount}
+                    """.trimIndent()
 
                     // Action buttons — using FlowRow for wrapping
                     FlowRow(
@@ -514,7 +464,7 @@ fun CameraPreviewScreen(
                             Text("Back")
                         }
                         OutlinedButton(
-                            onClick = { copyToClipboard(context, result.text) },
+                            onClick = { copyToClipboard(context, formattedText) },
                             colors = ButtonDefaults.outlinedButtonColors(
                                 contentColor = Color.White
                             ),
@@ -523,7 +473,7 @@ fun CameraPreviewScreen(
                             Text("📋 Copy")
                         }
                         OutlinedButton(
-                            onClick = { shareText(context, result.text) },
+                            onClick = { shareText(context, formattedText) },
                             colors = ButtonDefaults.outlinedButtonColors(
                                 contentColor = Color.White
                             ),
@@ -601,13 +551,13 @@ fun CameraPreviewScreen(
     }
 }
 /**
- * Card displaying structured OCR data (Date, Time, Temps).
+ * Card displaying structured OCR data from Gemini API.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun StructuredDataCard(data: com.example.clearscanocr.data.StructuredData) {
+private fun StructuredDataCard(result: com.example.clearscanocr.data.OcrResult) {
     androidx.compose.material3.Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp).verticalScroll(rememberScrollState()),
         colors = androidx.compose.material3.CardDefaults.cardColors(
             containerColor = Color.White.copy(alpha = 0.1f)
         ),
@@ -619,71 +569,56 @@ private fun StructuredDataCard(data: com.example.clearscanocr.data.StructuredDat
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                if (data.date != null) {
-                    InfoRow(Icons.Default.Event, data.date, Color(0xFF81C784))
+                if (result.date.isNotBlank()) {
+                    InfoRow(Icons.Default.Event, result.date, Color(0xFF81C784))
                 }
-                if (data.time != null) {
-                    InfoRow(Icons.Default.AccessTime, data.time, Color(0xFF64B5F6))
+                if (result.time.isNotBlank()) {
+                    InfoRow(Icons.Default.AccessTime, result.time, Color(0xFF64B5F6))
                 }
             }
 
-            if (data.date != null || data.time != null) {
+            if (result.date.isNotBlank() || result.time.isNotBlank()) {
                 Spacer(modifier = Modifier.height(12.dp))
                 androidx.compose.material3.Divider(color = Color.White.copy(alpha = 0.1f))
                 Spacer(modifier = Modifier.height(12.dp))
             }
 
-            // Body: Temperatures
-            if (data.temperatures.isNotEmpty()) {
-                Text(
-                    text = "Temperatures",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.Gray
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    data.temperatures.take(6).forEach { temp ->
-                        androidx.compose.foundation.layout.Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(4.dp))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.DeviceThermostat,
-                                contentDescription = null,
-                                tint = Color(0xFFFFB74D),
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(temp, color = Color.White, style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-            }
+            Text("Temperatures", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            // Grid for temperatures
+            TempRow("Low Set", result.lowSetTemp, "Target", result.targetTemp)
+            Spacer(modifier = Modifier.height(8.dp))
+            TempRow("High Set", result.highSetTemp, "Peak", result.peakTemp)
 
-            // Footer: Peak & Counts
-            androidx.compose.foundation.layout.Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                if (data.peakTemp != null) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Peak", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                        InfoRow(Icons.Default.TrendingUp, data.peakTemp, Color(0xFFE57373))
-                    }
-                }
-                if (data.counts.isNotEmpty()) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Counts", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                        InfoRow(Icons.Default.BarChart, data.counts.first(), Color(0xFFBA68C8))
-                    }
-                }
-            }
+            Spacer(modifier = Modifier.height(12.dp))
+            androidx.compose.material3.Divider(color = Color.White.copy(alpha = 0.1f))
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text("Counts", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            // Grid for counts
+            TempRow("Low", result.lowTempCount, "OK", result.okTempCount)
+            Spacer(modifier = Modifier.height(8.dp))
+            TempRow("High", result.highTempCount, "Total", result.totalTempCount)
+        }
+    }
+}
+
+@Composable
+private fun TempRow(label1: String, val1: String, label2: String, val2: String) {
+    androidx.compose.foundation.layout.Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label1, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+            InfoRow(Icons.Default.DeviceThermostat, val1.ifBlank { "N/A" }, Color(0xFFFFB74D))
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label2, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+            InfoRow(Icons.Default.DeviceThermostat, val2.ifBlank { "N/A" }, Color(0xFFBA68C8))
         }
     }
 }

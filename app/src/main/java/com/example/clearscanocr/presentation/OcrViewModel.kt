@@ -12,54 +12,33 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import org.opencv.core.Point
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 
 private const val TAG = "OcrViewModel"
 
-/**
- * Sealed interface representing the top-level navigation state.
- */
 sealed interface OcrUiState {
     data object Idle : OcrUiState
     data object CameraPreview : OcrUiState
 }
 
-/**
- * Sealed interface representing the scan workflow state
- * within the camera preview screen.
- */
 sealed interface ScanState {
-    /** Camera is live — waiting for user to tap "Scan Text". */
     data object Idle : ScanState
-
-    /** A frame has been captured and OCR is in progress. */
     data object Scanning : ScanState
-
-    /** OCR completed — display the result with bounding boxes. */
     data class Result(val ocrResult: OcrResult) : ScanState
 }
 
-/** Represents the status of the auto-capture engine. */
 enum class AutoCaptureStatus {
     Idle, Searching, Stable, Capturing, Cooldown
 }
 
-/**
- * ViewModel for the OCR feature.
- *
- * Manages navigation via [uiState] and the manual-scan workflow
- * via [scanState]. OCR runs only when the user taps "Scan Text".
- */
 class OcrViewModel : ViewModel() {
 
     private val ocrUseCase = OcrUseCase()
 
-    // ── Navigation state ──────────────────────────────────────────────
     private val _uiState = MutableStateFlow<OcrUiState>(OcrUiState.Idle)
     val uiState: StateFlow<OcrUiState> = _uiState.asStateFlow()
 
-    // ── Scan workflow state ───────────────────────────────────────────
     private val _scanState = MutableStateFlow<ScanState>(ScanState.Idle)
     val scanState: StateFlow<ScanState> = _scanState.asStateFlow()
 
@@ -69,21 +48,18 @@ class OcrViewModel : ViewModel() {
     val shouldCaptureFrame: Boolean
         get() = _captureNextFrame.get()
 
-    // ── Edge-detection overlay ─────────────────────────────────────────
-    private val _edgeOverlayBitmap = MutableStateFlow<Bitmap?>(null)
-    val edgeOverlayBitmap: StateFlow<Bitmap?> = _edgeOverlayBitmap.asStateFlow()
+    // ── Edge-detection state ──────────────────────────────────────────
+    private val _detectedCorners = MutableStateFlow<Array<Point>?>(null)
+    val detectedCorners: StateFlow<Array<Point>?> = _detectedCorners.asStateFlow()
 
-    /** Holds previous bitmap for safe recycling from any thread. */
-    private val previousEdgeBitmap = AtomicReference<Bitmap?>(null)
+    private val _analyzerDim = MutableStateFlow(android.util.Size(720, 1280))
+    val analyzerDim: StateFlow<android.util.Size> = _analyzerDim.asStateFlow()
 
-    // ── User guidance ─────────────────────────────────────────────────
     private val _guidanceMessage = MutableStateFlow("📄 Align document")
     val guidanceMessage: StateFlow<String> = _guidanceMessage.asStateFlow()
 
-    /** Debounce interval for guidance message updates (ms). */
-    private val messageDebounceMs = 400L
-    private var lastMessageUpdateTime = 0L
-    private var lastMessage = "📄 Align document"
+    private val _captureConfidence = MutableStateFlow(0f)
+    val captureConfidence: StateFlow<Float> = _captureConfidence.asStateFlow()
 
     // ── Auto-capture state ────────────────────────────────────────────
     private val _autoCaptureEnabled = MutableStateFlow(true)
@@ -93,47 +69,40 @@ class OcrViewModel : ViewModel() {
     val autoCaptureStatus: StateFlow<AutoCaptureStatus> = _autoCaptureStatus.asStateFlow()
 
     private var stableFrameCount = 0
-    private val stableFrameThreshold = 6 // ~400ms at 15 FPS
+    private val stableFrameThreshold = 4
     private var isAutoCaptureCooldown = false
-    private val cooldownDurationMs = 3000L
+    private val messageDebounceMs = 400L
+    private var lastMessageUpdateTime = 0L
+    private var lastMessage = ""
 
-    // ── Navigation actions ────────────────────────────────────────────
-
+    // ── Navigation ────────────────────────────────────────────────────
     fun onStartOcr() {
         _scanState.value = ScanState.Idle
         _uiState.value = OcrUiState.CameraPreview
+        _autoCaptureStatus.value = if (_autoCaptureEnabled.value) AutoCaptureStatus.Searching else AutoCaptureStatus.Idle
     }
 
     fun onBackToHome() {
         _scanState.value = ScanState.Idle
         _uiState.value = OcrUiState.Idle
+        _detectedCorners.value = null
+        OpenCvEdgeDetector.reset()
     }
 
-    // ── Scan actions ──────────────────────────────────────────────────
-
+    // ── Scanning ──────────────────────────────────────────────────────
     fun onScanRequested() {
         if (isProcessing.get()) return
         _scanState.value = ScanState.Scanning
         _captureNextFrame.set(true)
     }
 
-    /**
-     * Called by the analyzer after capturing a frame.
-     *
-     * @param bitmap          Raw camera bitmap (caller must NOT recycle).
-     * @param rotationDegrees Camera sensor rotation.
-     * @param viewWidth       PreviewView width in pixels.
-     * @param viewHeight      PreviewView height in pixels.
-     * @param analyzerWidth   Width of the (rotated) analyzer frame used for edge detection.
-     * @param analyzerHeight  Height of the (rotated) analyzer frame.
-     */
     fun onBitmapCaptured(
         bitmap: Bitmap,
         rotationDegrees: Int,
         viewWidth: Int,
         viewHeight: Int,
-        analyzerWidth: Int = 0,
-        analyzerHeight: Int = 0
+        analyzerWidth: Int,
+        analyzerHeight: Int
     ) {
         if (!isProcessing.compareAndSet(false, true)) {
             bitmap.recycle()
@@ -142,62 +111,22 @@ class OcrViewModel : ViewModel() {
 
         viewModelScope.launch {
             try {
-                // ── Perspective warp + enhancement (if corners available) ───────────
-                val corners = if (analyzerWidth > 0 && analyzerHeight > 0)
-                    OpenCvEdgeDetector.getLastCorners() else null
-
-                // Rotate the raw bitmap first so it matches the orientation used for detection
+                val corners = OpenCvEdgeDetector.getLastCorners()
                 val rotatedBitmap = OpenCvEdgeDetector.imageProxyToBitmap(bitmap, rotationDegrees)
 
-                val ocrBitmap: Bitmap = if (corners != null) {
-                    val warped = OpenCvEdgeDetector.warpAndEnhance(
-                        rotatedBitmap, analyzerWidth, analyzerHeight, corners
-                    )
-                    if (warped != null) {
-                        Log.d(TAG, "Perspective warp applied successfully")
-                        // rotate was applied above; recycle original if it's a new bitmap
-                        if (rotatedBitmap !== bitmap) rotatedBitmap.recycle()
-                        warped
-                    } else {
-                        Log.w(TAG, "Warp failed, falling back to rotated bitmap")
-                        rotatedBitmap
-                    }
+                val ocrBitmap: Bitmap = if (corners != null && analyzerWidth > 0) {
+                    OpenCvEdgeDetector.warpAndEnhance(rotatedBitmap, analyzerWidth, analyzerHeight, corners) ?: rotatedBitmap
                 } else {
-                    Log.d(TAG, "No corners available, using rotated bitmap for OCR")
                     rotatedBitmap
                 }
 
-                // ── OCR (viewWidth/viewHeight are not needed for pixel coords anymore, ──────
-                //    but kept for backward compat with ocrUseCase signature) ──────────
-                val result = ocrUseCase.execute(
-                    ocrBitmap, 0, viewWidth, viewHeight,
-                    isAlreadyWarped = (corners != null)
-                )
-                _scanState.value = if (result.text.isNotBlank()) {
-                    Log.d(TAG, "Scan result: ${result.text}")
-                    ScanState.Result(result)
-                } else {
-                    ScanState.Result(
-                        OcrResult(
-                            text = "No text detected. Try again.",
-                            textBlocks = emptyList(),
-                            sourceWidth = 0,
-                            sourceHeight = 0
-                        )
-                    )
-                }
+                val result = ocrUseCase.execute(ocrBitmap)
+                _scanState.value = if (result.isValid) ScanState.Result(result) 
+                                   else ScanState.Result(OcrResult(isValid = false, errorMessage = result.errorMessage ?: "Failed to read data."))
             } catch (e: Exception) {
-                Log.e(TAG, "Scan failed", e)
-                _scanState.value = ScanState.Result(
-                    OcrResult(
-                        text = "Scan failed — please try again.",
-                        textBlocks = emptyList(),
-                        sourceWidth = 0,
-                        sourceHeight = 0
-                    )
-                )
+                Log.e(TAG, "OCR failed", e)
+                _scanState.value = ScanState.Result(OcrResult(isValid = false, errorMessage = "Error connecting to AI service."))
             } finally {
-                // bitmap was rotated in-place; ocrBitmap will be recycled separately
                 bitmap.recycle()
                 isProcessing.set(false)
             }
@@ -206,72 +135,39 @@ class OcrViewModel : ViewModel() {
 
     fun onScanAgain() {
         _scanState.value = ScanState.Idle
-        _autoCaptureStatus.value = AutoCaptureStatus.Searching
+        _autoCaptureStatus.value = if (_autoCaptureEnabled.value) AutoCaptureStatus.Searching else AutoCaptureStatus.Idle
     }
 
     fun toggleAutoCapture(enabled: Boolean) {
         _autoCaptureEnabled.value = enabled
-        if (!enabled) {
-            _autoCaptureStatus.value = AutoCaptureStatus.Idle
-            stableFrameCount = 0
-        } else if (_scanState.value == ScanState.Idle) {
-            _autoCaptureStatus.value = AutoCaptureStatus.Searching
-        }
+        _autoCaptureStatus.value = if (enabled) AutoCaptureStatus.Searching else AutoCaptureStatus.Idle
     }
 
     fun markFrameCaptured() {
         _captureNextFrame.set(false)
     }
 
-    // ── Edge overlay ──────────────────────────────────────────────────
+    fun onEdgeFrame(result: EdgeDetectionResult, width: Int, height: Int) {
+        _detectedCorners.value = result.corners
+        _analyzerDim.value = android.util.Size(width, height)
+        _captureConfidence.value = result.confidence
 
-    /**
-     * Called by the analyzer with the latest edge-detection result.
-     * Safely recycles the previous bitmap to avoid memory leaks.
-     * Applies debounce logic to the guidance message.
-     */
-    fun onEdgeFrame(result: EdgeDetectionResult) {
-        val old = previousEdgeBitmap.getAndSet(result.bitmap)
-        _edgeOverlayBitmap.value = result.bitmap
-        old?.recycle()
+        var displayMsg = result.message
+        if (_autoCaptureStatus.value == AutoCaptureStatus.Capturing) displayMsg = "📸 Capturing..."
 
-        // Debounce guidance message updates
         val now = System.currentTimeMillis()
-        var displayMessage = result.message
-
-        // Override message if capturing
-        if (_autoCaptureStatus.value == AutoCaptureStatus.Capturing) {
-            displayMessage = "📸 Capturing..."
-        }
-
-        if (displayMessage != lastMessage &&
-            now - lastMessageUpdateTime >= messageDebounceMs
-        ) {
-            lastMessage = displayMessage
+        if (displayMsg != lastMessage && now - lastMessageUpdateTime > messageDebounceMs) {
+            _guidanceMessage.value = displayMsg
+            lastMessage = displayMsg
             lastMessageUpdateTime = now
-            _guidanceMessage.value = displayMessage
         }
 
-        // ── Auto-capture Logic ────────────────────────────────────────
-        if (!_autoCaptureEnabled.value || 
-            _scanState.value != ScanState.Idle || 
-            isAutoCaptureCooldown
-        ) {
+        if (!_autoCaptureEnabled.value || _scanState.value != ScanState.Idle || isAutoCaptureCooldown) {
             stableFrameCount = 0
-            if (_autoCaptureEnabled.value && !isAutoCaptureCooldown) {
-                _autoCaptureStatus.value = AutoCaptureStatus.Searching
-            }
             return
         }
 
-        // Readiness condition per requirements
-        val isReady = result.confidence > 0.8f && 
-                     result.isStable && 
-                     !result.isBlurry && 
-                     result.isWellLit && 
-                     result.areaValid
-
-        if (isReady) {
+        if (result.isStable && result.areaValid) {
             stableFrameCount++
             _autoCaptureStatus.value = AutoCaptureStatus.Stable
             if (stableFrameCount >= stableFrameThreshold) {
@@ -284,27 +180,13 @@ class OcrViewModel : ViewModel() {
     }
 
     private fun triggerAutoCapture() {
-        if (_scanState.value != ScanState.Idle) return
-        
         _autoCaptureStatus.value = AutoCaptureStatus.Capturing
         onScanRequested()
-        
-        // Start cooldown
         isAutoCaptureCooldown = true
-        stableFrameCount = 0
         viewModelScope.launch {
-            kotlinx.coroutines.delay(cooldownDurationMs)
+            kotlinx.coroutines.delay(3000)
             isAutoCaptureCooldown = false
-            if (_autoCaptureEnabled.value && _scanState.value == ScanState.Idle) {
-                _autoCaptureStatus.value = AutoCaptureStatus.Searching
-            }
+            if (_scanState.value == ScanState.Idle) _autoCaptureStatus.value = AutoCaptureStatus.Searching
         }
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        previousEdgeBitmap.getAndSet(null)?.recycle()
-        _edgeOverlayBitmap.value = null
-        _guidanceMessage.value = ""
     }
 }
